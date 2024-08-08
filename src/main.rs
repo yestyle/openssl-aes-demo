@@ -19,14 +19,10 @@ pub fn hexdump(bytes: &[u8]) {
     println!();
 }
 
-// key_size in bits, e.g.: 128, 256, etc.
-fn evp(passphrase: &[u8], salt: Option<&[u8]>, key_size: u32) -> (Vec<u8>, Vec<u8>) {
+fn evp(passphrase: &[u8], salt: Option<&[u8]>, dk_len: usize) -> Vec<u8> {
     let mut v = Vec::new();
     let mut hash = Vec::new();
 
-    let expected_key_bytes = (key_size / 8) as usize;
-    // Expected IV is always 16 bytes
-    let expected_iv_bytes = 16;
     loop {
         v.clear();
         v.extend_from_slice(&hash);
@@ -41,38 +37,26 @@ fn evp(passphrase: &[u8], salt: Option<&[u8]>, key_size: u32) -> (Vec<u8>, Vec<u
         println!("Hash:");
         hexdump(&hash);
 
-        if hash.len() >= expected_key_bytes + expected_iv_bytes {
+        if hash.len() >= dk_len {
             break;
         }
     }
 
-    (
-        hash[..expected_key_bytes].to_owned(),
-        hash[expected_key_bytes..expected_key_bytes + expected_iv_bytes].to_owned(),
-    )
+    hash.drain(dk_len..);
+    hash
 }
 
-fn pbkdf2(
-    passphrase: &[u8],
-    salt: Option<&[u8]>,
-    iterations: u32,
-    dk_len: usize,
-) -> (Vec<u8>, Vec<u8>) {
-    // Expected IV is always 16 bytes
-    let expected_iv_bytes = 16;
+fn pbkdf2(passphrase: &[u8], salt: Option<&[u8]>, iterations: u32, dk_len: usize) -> Vec<u8> {
     let salt = if let Some(salt) = salt { salt } else { &[] };
 
     let prf = hmac::Key::new(hmac::HMAC_SHA256, passphrase);
-    let mut key = vec![0u8; dk_len];
-    let mut iv = vec![0u8; expected_iv_bytes];
+    let mut output = vec![0u8; dk_len];
     let mut block_num = 1u32;
 
-    let mut remaining_key = dk_len;
-    let mut remaining_iv = expected_iv_bytes;
-    let mut offset_key = 0;
-    let mut offset_iv = 0;
+    let mut remaining = dk_len;
+    let mut offset = 0;
 
-    while remaining_key > 0 || remaining_iv > 0 {
+    while remaining > 0 {
         let mut block = [0u8; 32];
         let mut u = vec![0u8; 32];
 
@@ -96,28 +80,15 @@ fn pbkdf2(
         println!("Block {block_num}:");
         hexdump(&block);
 
-        let mut offset_in_block = 0;
-        if remaining_key > 0 {
-            let used = remaining_key.min(block.len());
-            key[offset_key..offset_key + used].copy_from_slice(&block[..used]);
+        let block_len = remaining.min(block.len());
+        output[offset..offset + block_len].copy_from_slice(&block[..block_len]);
 
-            offset_key += used;
-            remaining_key -= used;
-            offset_in_block += used;
-        }
-
-        if remaining_iv > 0 {
-            let used = remaining_iv.min(block.len() - offset_in_block);
-            iv[offset_iv..offset_iv + used]
-                .copy_from_slice(&block[offset_in_block..offset_in_block + used]);
-
-            offset_iv += used;
-            remaining_iv -= used;
-        }
+        offset += block_len;
+        remaining -= block_len;
         block_num += 1;
     }
 
-    (key, iv)
+    output
 }
 
 fn main() {
@@ -127,24 +98,24 @@ fn main() {
     // openssl enc -aes-256-cbc -k "drjom(&)(&)MOJRD" -md sha256 -P -nosalt
     // key=53A8968B0F53CAA2D21F2694B19EDD0676AF034D4D570651B3689C7827EC84C2
     // iv =ED889267E14BA02167ED96E226153158
-    let (key, iv) = evp(passphrase.as_bytes(), None, 256);
+    let derived_key = evp(passphrase.as_bytes(), None, 48);
     assert_eq!(
         hex!("53A8968B0F53CAA2D21F2694B19EDD0676AF034D4D570651B3689C7827EC84C2"),
-        key.as_slice()
+        &derived_key[..32]
     );
-    assert_eq!(hex!("ED889267E14BA02167ED96E226153158"), iv.as_slice());
+    assert_eq!(hex!("ED889267E14BA02167ED96E226153158"), &derived_key[32..]);
 
     // evp + salt
     // openssl enc -aes-256-cbc -k "drjom(&)(&)MOJRD" -md sha256 -P -salt
     // salt=DB42A96B2AA5CECE
     // key=CD10B0CBE8CFF451CDF082F00DA4A3E6351BFD5996D7EF0E4ACEBE13B1382BF7
     // iv =115776C3DFD6EFEDA0076617A35B3438
-    let (key, iv) = evp(passphrase.as_bytes(), Some(&hex!("DB42A96B2AA5CECE")), 256);
+    let derived_key = evp(passphrase.as_bytes(), Some(&hex!("DB42A96B2AA5CECE")), 48);
     assert_eq!(
         hex!("CD10B0CBE8CFF451CDF082F00DA4A3E6351BFD5996D7EF0E4ACEBE13B1382BF7"),
-        key.as_slice()
+        &derived_key[..32]
     );
-    assert_eq!(hex!("115776C3DFD6EFEDA0076617A35B3438"), iv.as_slice());
+    assert_eq!(hex!("115776C3DFD6EFEDA0076617A35B3438"), &derived_key[32..]);
 
     // pbkdf2 + salt + iter 10000
     // openssl enc -aes-256-cbc -k "drjom(&)(&)MOJRD" -md sha256 -P -salt -iter 10000
@@ -173,54 +144,66 @@ fn main() {
     );
 
     // Using my own implementation
-    let (key, iv) = pbkdf2(
+    let derived_key = pbkdf2(
         passphrase.as_bytes(),
         Some(&hex!("0526EC6BCCE0E971")),
         10000,
-        32,
+        48,
     );
     assert_eq!(
-        &key,
+        &derived_key[..32],
         &hex!("9332AE8FAEAD6BA8B94DEAE0526A96267F7588611FCC5A9A30DC9CA8480E9B55")
     );
-    assert_eq!(&iv, &hex!("5E4E0250801A7C68FA185133729D7798"));
+    assert_eq!(
+        &derived_key[32..],
+        &hex!("5E4E0250801A7C68FA185133729D7798")
+    );
 
     // pbkdf2 + salt + iter 1
     // openssl enc -aes-256-cbc -k "drjom(&)(&)MOJRD" -md sha256 -P -salt -iter 1
     // salt=ED0B59AB61394DAF
     // key=7BE0978302CDEA9A5C2DADC931BCC2559C7FA7FC3E378EC9D6276066D8026CFC
     // iv =3862EB4C5400259794232D09277C279E
-    let (key, iv) = pbkdf2(
+    let derived_key = pbkdf2(
         passphrase.as_bytes(),
         Some(&hex!("ED0B59AB61394DAF")),
         1,
-        32,
+        48,
     );
     assert_eq!(
-        &key,
+        &derived_key[..32],
         &hex!("7BE0978302CDEA9A5C2DADC931BCC2559C7FA7FC3E378EC9D6276066D8026CFC")
     );
-    assert_eq!(&iv, &hex!("3862EB4C5400259794232D09277C279E"));
+    assert_eq!(
+        &derived_key[32..],
+        &hex!("3862EB4C5400259794232D09277C279E")
+    );
 
     // pbkdf2 + nosalt (+ iter 10000 by default)
     // openssl enc -aes-256-cbc -k "drjom(&)(&)MOJRD" -md sha256 -P -nosalt -pbkdf2
     // key=2BA47DBFEF693184578563073278A83E3DE33A1F2DE6E64BDBD9DFC32946CE0B
     // iv =3C03BCBBAE2BD72F44366159358F3843
-    let (key, iv) = pbkdf2(passphrase.as_bytes(), None, 10000, 32);
+    let derived_key = pbkdf2(passphrase.as_bytes(), None, 10000, 48);
     assert_eq!(
-        &key,
+        &derived_key[..32],
         &hex!("2BA47DBFEF693184578563073278A83E3DE33A1F2DE6E64BDBD9DFC32946CE0B")
     );
-    assert_eq!(&iv, &hex!("3C03BCBBAE2BD72F44366159358F3843"));
+    assert_eq!(
+        &derived_key[32..],
+        &hex!("3C03BCBBAE2BD72F44366159358F3843")
+    );
 
     // pbkdf2 + nosalt + iter 1
     // openssl enc -aes-256-cbc -k "drjom(&)(&)MOJRD" -md sha256 -P -nosalt -pbkdf2 -iter 1
     // key=B0BC445D2D47544327D147982B25B86BBDE6A745338D0B9D681DDD61E3AE523F
     // iv =6EAD332E24753C990A6031E3C9D12B3B
-    let (key, iv) = pbkdf2(passphrase.as_bytes(), None, 1, 32);
+    let derived_key = pbkdf2(passphrase.as_bytes(), None, 1, 48);
     assert_eq!(
-        &key,
+        &derived_key[..32],
         &hex!("B0BC445D2D47544327D147982B25B86BBDE6A745338D0B9D681DDD61E3AE523F")
     );
-    assert_eq!(&iv, &hex!("6EAD332E24753C990A6031E3C9D12B3B"));
+    assert_eq!(
+        &derived_key[32..],
+        &hex!("6EAD332E24753C990A6031E3C9D12B3B")
+    );
 }
