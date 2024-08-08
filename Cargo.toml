@@ -5,5 +5,7 @@ edition = "2021"
 
 [dependencies]
 hex-literal = "0.4.1"
-openssl = "0.10.66"
 ring = "0.17.8"
+
+[dev-dependencies]
+openssl = "0.10.66"
