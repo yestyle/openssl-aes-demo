@@ -1,0 +1,9 @@
+[package]
+name = "openssl-aes-demo"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+hex-literal = "0.4.1"
+openssl = "0.10.66"
+ring = "0.17.8"
