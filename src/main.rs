@@ -1,4 +1,4 @@
-use openssl::symm::{encrypt, Cipher};
+use openssl::symm::{decrypt, encrypt, Cipher};
 use ring::{digest, hmac};
 
 pub fn hexdump(bytes: &[u8]) {
@@ -101,6 +101,14 @@ pub fn wrap_ciphertext(ciphertext: Vec<u8>, salt: Option<&[u8]>) -> Vec<u8> {
     }
 }
 
+pub fn parse_ciphertext(ciphertext: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    if ciphertext.starts_with(b"Salted__") {
+        (Vec::from(&ciphertext[8..16]), Vec::from(&ciphertext[16..]))
+    } else {
+        (Vec::new(), Vec::from(ciphertext))
+    }
+}
+
 pub fn encrypt_with_evp_kdf(plaintext: &[u8], passphrase: &[u8], salt: Option<&[u8]>) -> Vec<u8> {
     let derived_key = evp(passphrase, salt, 48);
     let (key, iv) = (&derived_key[..32], &derived_key[32..]);
@@ -124,6 +132,31 @@ pub fn encrypt_with_pbkdf2_kdf(
         encrypt(Cipher::aes_256_cbc(), key, Some(iv), &plaintext).unwrap(),
         salt,
     )
+}
+
+pub fn decrypt_with_evp_kdf(ciphertext: &[u8], passphrase: &[u8]) -> Vec<u8> {
+    let (salt, cipher) = parse_ciphertext(ciphertext);
+    let derived_key = evp(
+        passphrase,
+        if salt.is_empty() { None } else { Some(&salt) },
+        48,
+    );
+    let (key, iv) = (&derived_key[..32], &derived_key[32..]);
+
+    decrypt(Cipher::aes_256_cbc(), key, Some(iv), &cipher).unwrap()
+}
+
+pub fn decrypt_with_pbkdf2_kdf(ciphertext: &[u8], passphrase: &[u8], iterations: u32) -> Vec<u8> {
+    let (salt, cipher) = parse_ciphertext(ciphertext);
+    let derived_key = pbkdf2(
+        passphrase,
+        if salt.is_empty() { None } else { Some(&salt) },
+        iterations,
+        48,
+    );
+    let (key, iv) = (&derived_key[..32], &derived_key[32..]);
+
+    decrypt(Cipher::aes_256_cbc(), key, Some(iv), &cipher).unwrap()
 }
 
 fn main() {}
@@ -165,7 +198,7 @@ mod tests {
     }
 
     #[test]
-    fn test_evp() {
+    fn test_evp_kdf() {
         // evp + nosalt
         // openssl enc -aes-256-cbc -k "drjom(&)(&)MOJRD" -md sha256 -P -nosalt
         // key=53A8968B0F53CAA2D21F2694B19EDD0676AF034D4D570651B3689C7827EC84C2
@@ -214,7 +247,25 @@ mod tests {
     }
 
     #[test]
-    fn test_pbkdf2() {
+    fn test_decrypt_with_evp_kdf() {
+        assert_eq!(
+            PLAINTEXT,
+            decrypt_with_evp_kdf(
+                &hex!("23 b2 31 7e 87 74 3b 5a  4a d9 8d fe 05 92 23 c1"),
+                PASSPHRASE,
+            )
+            .as_slice()
+        );
+
+        assert_eq!(
+            PLAINTEXT,
+            // Salted__ be 2b e3 cf f1 84 23 71 + ciphertext
+            decrypt_with_evp_kdf(&hex!("53 61 6c 74 65 64 5f 5f  be 2b e3 cf f1 84 23 71  a3 04 e4 ba 89 d0 60 d5  4c cd f5 c5 6d 02 2e ee"), PASSPHRASE).as_slice()
+        );
+    }
+
+    #[test]
+    fn test_pbkdf2_kdf() {
         // pbkdf2 + salt + iter 10000
         // openssl enc -aes-256-cbc -k "drjom(&)(&)MOJRD" -md sha256 -P -salt -iter 10000
         // salt=0526EC6BCCE0E971
@@ -275,7 +326,7 @@ mod tests {
     }
 
     #[test]
-    fn test_encrypt_with_pbkdf2() {
+    fn test_encrypt_with_pbkdf2_kdf() {
         // pbkdf2 + nosalt (+ iter 10000 by default)
         // openssl enc -aes-256-cbc -k "drjom(&)(&)MOJRD" -md sha256 -p -nosalt -pbkdf2 -in plaintext.txt -out encrypted.bin
         // key=2BA47DBFEF693184578563073278A83E3DE33A1F2DE6E64BDBD9DFC32946CE0B
@@ -297,6 +348,30 @@ mod tests {
                 PLAINTEXT,
                 PASSPHRASE,
                 Some(&hex!("D28A2CBDE2512412")),
+                10000
+            )
+            .as_slice()
+        );
+    }
+
+    #[test]
+    fn test_decrypt_with_pbkdf2_kdf() {
+        assert_eq!(
+            PLAINTEXT,
+            decrypt_with_pbkdf2_kdf(
+                &hex!("39 9a 67 ff 6d 53 61 3b  e5 bd 01 13 1c 9c 2e e1"),
+                PASSPHRASE,
+                10000
+            )
+            .as_slice()
+        );
+
+        assert_eq!(
+            PLAINTEXT,
+            decrypt_with_pbkdf2_kdf(
+                // Salted__ d2 8a 2c bd e2 51 24 12 + ciphertext
+                &hex!("53 61 6c 74 65 64 5f 5f  d2 8a 2c bd e2 51 24 12  c9 fa 88 c8 b3 94 02 51  6c 1d 3a 10 10 b6 96 55"),
+                PASSPHRASE,
                 10000
             )
             .as_slice()
