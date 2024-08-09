@@ -1,7 +1,7 @@
 use openssl::symm::{decrypt, encrypt, Cipher};
 use ring::{digest, hmac};
 
-pub fn hexdump(bytes: &[u8]) {
+fn hexdump(bytes: &[u8]) {
     for (i, byte) in bytes.iter().enumerate() {
         if i % 16 == 0 {
             print!("{i:03X}: ");
@@ -18,7 +18,7 @@ pub fn hexdump(bytes: &[u8]) {
     println!();
 }
 
-pub fn evp(passphrase: &[u8], salt: Option<&[u8]>, dk_len: usize) -> Vec<u8> {
+fn evp(passphrase: &[u8], salt: Option<&[u8]>, dk_len: usize) -> Vec<u8> {
     let mut v = Vec::new();
     let mut hash = Vec::new();
 
@@ -45,7 +45,7 @@ pub fn evp(passphrase: &[u8], salt: Option<&[u8]>, dk_len: usize) -> Vec<u8> {
     hash
 }
 
-pub fn pbkdf2(passphrase: &[u8], salt: Option<&[u8]>, iterations: u32, dk_len: usize) -> Vec<u8> {
+fn pbkdf2(passphrase: &[u8], salt: Option<&[u8]>, iterations: u32, dk_len: usize) -> Vec<u8> {
     let salt = if let Some(salt) = salt { salt } else { &[] };
 
     let prf = hmac::Key::new(hmac::HMAC_SHA256, passphrase);
@@ -90,7 +90,7 @@ pub fn pbkdf2(passphrase: &[u8], salt: Option<&[u8]>, iterations: u32, dk_len: u
     output
 }
 
-pub fn wrap_ciphertext(ciphertext: Vec<u8>, salt: Option<&[u8]>) -> Vec<u8> {
+fn wrap_ciphertext(ciphertext: Vec<u8>, salt: Option<&[u8]>) -> Vec<u8> {
     if let Some(salt) = salt {
         let mut v = Vec::from(b"Salted__");
         v.extend_from_slice(salt);
@@ -101,7 +101,7 @@ pub fn wrap_ciphertext(ciphertext: Vec<u8>, salt: Option<&[u8]>) -> Vec<u8> {
     }
 }
 
-pub fn parse_ciphertext(ciphertext: &[u8]) -> (Vec<u8>, Vec<u8>) {
+fn parse_ciphertext(ciphertext: &[u8]) -> (Vec<u8>, Vec<u8>) {
     if ciphertext.starts_with(b"Salted__") {
         (Vec::from(&ciphertext[8..16]), Vec::from(&ciphertext[16..]))
     } else {
@@ -198,8 +198,7 @@ mod tests {
     }
 
     #[test]
-    fn test_evp_kdf() {
-        // evp + nosalt
+    fn test_evp_kdf_nosalt() {
         // openssl enc -aes-256-cbc -k "drjom(&)(&)MOJRD" -md sha256 -P -nosalt
         // key=53A8968B0F53CAA2D21F2694B19EDD0676AF034D4D570651B3689C7827EC84C2
         // iv =ED889267E14BA02167ED96E226153158
@@ -209,8 +208,10 @@ mod tests {
             &derived_key[..32]
         );
         assert_eq!(hex!("ED889267E14BA02167ED96E226153158"), &derived_key[32..]);
+    }
 
-        // evp + salt
+    #[test]
+    fn test_evp_kdf_salt() {
         // openssl enc -aes-256-cbc -k "drjom(&)(&)MOJRD" -md sha256 -P -salt
         // salt=DB42A96B2AA5CECE
         // key=CD10B0CBE8CFF451CDF082F00DA4A3E6351BFD5996D7EF0E4ACEBE13B1382BF7
@@ -224,7 +225,7 @@ mod tests {
     }
 
     #[test]
-    fn test_encrypt_with_evp_kdf() {
+    fn test_encrypt_with_evp_kdf_nosalt() {
         // evp + nosalt
         // openssl enc -aes-256-cbc -k "drjom(&)(&)MOJRD" -md sha256 -p -nosalt -in plaintext.txt -out encrypted.bin
         // key=53A8968B0F53CAA2D21F2694B19EDD0676AF034D4D570651B3689C7827EC84C2
@@ -233,7 +234,10 @@ mod tests {
             hex!("23 b2 31 7e 87 74 3b 5a  4a d9 8d fe 05 92 23 c1"),
             encrypt_with_evp_kdf(PLAINTEXT, PASSPHRASE, None).as_slice()
         );
+    }
 
+    #[test]
+    fn test_encrypt_with_evp_kdf_salt() {
         // evp + salt
         // openssl enc -aes-256-cbc -k "drjom(&)(&)MOJRD" -md sha256 -p -salt -in plaintext.txt -out encrypted.bin
         // salt=BE2BE3CFF1842371
@@ -247,7 +251,7 @@ mod tests {
     }
 
     #[test]
-    fn test_decrypt_with_evp_kdf() {
+    fn test_decrypt_with_evp_kdf_nosalt() {
         assert_eq!(
             PLAINTEXT,
             decrypt_with_evp_kdf(
@@ -256,7 +260,10 @@ mod tests {
             )
             .as_slice()
         );
+    }
 
+    #[test]
+    fn test_decrypt_with_evp_kdf_salt() {
         assert_eq!(
             PLAINTEXT,
             // Salted__ be 2b e3 cf f1 84 23 71 + ciphertext
@@ -265,8 +272,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pbkdf2_kdf() {
-        // pbkdf2 + salt + iter 10000
+    fn test_pbkdf2_kdf_salt_iter_10000() {
         // openssl enc -aes-256-cbc -k "drjom(&)(&)MOJRD" -md sha256 -P -salt -iter 10000
         // salt=0526EC6BCCE0E971
         // key=9332AE8FAEAD6BA8B94DEAE0526A96267F7588611FCC5A9A30DC9CA8480E9B55
@@ -280,8 +286,10 @@ mod tests {
             &derived_key[32..],
             &hex!("5E4E0250801A7C68FA185133729D7798")
         );
+    }
 
-        // pbkdf2 + salt + iter 1
+    #[test]
+    fn test_pbkdf2_kdf_salt_iter_1() {
         // openssl enc -aes-256-cbc -k "drjom(&)(&)MOJRD" -md sha256 -P -salt -iter 1
         // salt=ED0B59AB61394DAF
         // key=7BE0978302CDEA9A5C2DADC931BCC2559C7FA7FC3E378EC9D6276066D8026CFC
@@ -295,8 +303,10 @@ mod tests {
             &derived_key[32..],
             &hex!("3862EB4C5400259794232D09277C279E")
         );
+    }
 
-        // pbkdf2 + nosalt (+ iter 10000 by default)
+    #[test]
+    fn test_pbkdf2_kdf_nosalt_iter_10000() {
         // openssl enc -aes-256-cbc -k "drjom(&)(&)MOJRD" -md sha256 -P -nosalt -pbkdf2
         // key=2BA47DBFEF693184578563073278A83E3DE33A1F2DE6E64BDBD9DFC32946CE0B
         // iv =3C03BCBBAE2BD72F44366159358F3843
@@ -309,8 +319,10 @@ mod tests {
             &derived_key[32..],
             &hex!("3C03BCBBAE2BD72F44366159358F3843")
         );
+    }
 
-        // pbkdf2 + nosalt + iter 1
+    #[test]
+    fn test_pbkdf2_kdf_nosalt_iter_1() {
         // openssl enc -aes-256-cbc -k "drjom(&)(&)MOJRD" -md sha256 -P -nosalt -pbkdf2 -iter 1
         // key=B0BC445D2D47544327D147982B25B86BBDE6A745338D0B9D681DDD61E3AE523F
         // iv =6EAD332E24753C990A6031E3C9D12B3B
@@ -326,8 +338,7 @@ mod tests {
     }
 
     #[test]
-    fn test_encrypt_with_pbkdf2_kdf() {
-        // pbkdf2 + nosalt (+ iter 10000 by default)
+    fn test_encrypt_with_pbkdf2_kdf_nosalt_iter_10000() {
         // openssl enc -aes-256-cbc -k "drjom(&)(&)MOJRD" -md sha256 -p -nosalt -pbkdf2 -in plaintext.txt -out encrypted.bin
         // key=2BA47DBFEF693184578563073278A83E3DE33A1F2DE6E64BDBD9DFC32946CE0B
         // iv =3C03BCBBAE2BD72F44366159358F3843
@@ -335,8 +346,10 @@ mod tests {
             hex!("39 9a 67 ff 6d 53 61 3b  e5 bd 01 13 1c 9c 2e e1"),
             encrypt_with_pbkdf2_kdf(PLAINTEXT, PASSPHRASE, None, 10000).as_slice()
         );
+    }
 
-        // pbkdf2 + salt (+ iter 10000 by default)
+    #[test]
+    fn test_encrypt_with_pbkdf2_kdf_salt_iter_10000() {
         // openssl enc -aes-256-cbc -k "drjom(&)(&)MOJRD" -md sha256 -p -salt -pbkdf2 -in plaintext.txt -out encrypted.bin
         // salt=D28A2CBDE2512412
         // key=D0B6D47237B047DD6871138844DB5C82FD5039B783070B06FFDB9B589B2FDD15
@@ -355,7 +368,7 @@ mod tests {
     }
 
     #[test]
-    fn test_decrypt_with_pbkdf2_kdf() {
+    fn test_decrypt_with_pbkdf2_kdf_nosalt_iter_10000() {
         assert_eq!(
             PLAINTEXT,
             decrypt_with_pbkdf2_kdf(
@@ -365,7 +378,10 @@ mod tests {
             )
             .as_slice()
         );
+    }
 
+    #[test]
+    fn test_decrypt_with_pbkdf2_kdf_salt_iter_10000() {
         assert_eq!(
             PLAINTEXT,
             decrypt_with_pbkdf2_kdf(
